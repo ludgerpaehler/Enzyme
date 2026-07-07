@@ -16,7 +16,11 @@ on:
 jobs:
   build-plugin:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # cold plugin build is ~5 core-hours (~80 min on 4 vCPUs); warm runs
+    # restore the build dir + ccache and finish in minutes
+    timeout-minutes: 180
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     defaults:
       run:
         # -l so the conda hooks from setup-miniconda are loaded
@@ -35,7 +39,7 @@ jobs:
       - name: Install LLVM 20 toolchain (numba dev channel)
         run: >
           conda install -y -c numba/label/dev -c conda-forge
-          llvmdev=20 cmake ninja c-compiler cxx-compiler
+          llvmdev=20 cmake ninja c-compiler cxx-compiler ccache
       # incremental: restore the newest previous build dir so ninja only
       # recompiles what the push touched
       - name: Cache build directory
@@ -45,6 +49,13 @@ jobs:
           key: enzyme-build-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             enzyme-build-${{ runner.os }}-
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
       - name: Configure and build LLVMEnzyme-20
         run: |
           cmake -S enzyme -B build -G Ninja \
@@ -57,7 +68,9 @@ jobs:
             -DENZYME_EXTERNAL_SHARED_LIB=OFF \
             -DENZYME_STATIC_LIB=OFF \
             -DCMAKE_C_COMPILER="${CC:-cc}" \
-            -DCMAKE_CXX_COMPILER="${CXX:-c++}"
+            -DCMAKE_CXX_COMPILER="${CXX:-c++}" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build --target LLVMEnzyme-20 -j "$(nproc)"
       - uses: actions/upload-artifact@v7
         with:
