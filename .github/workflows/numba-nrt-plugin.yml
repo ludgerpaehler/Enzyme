@@ -1,0 +1,51 @@
+name: numba-nrt plugin
+
+# The only CI this fork branch needs: prove the numba-nrt patch still
+# builds the LLVMEnzyme-20 plugin against the same conda LLVM 20 that
+# numzyme pins, and publish the .so as an artifact.  All upstream Enzyme
+# workflows are removed from this branch -- their matrices (multi-LLVM,
+# Julia, Rust, MLIR, bazel, benchmarks) validate surfaces this fork does
+# not touch, and the patch itself is exercised end-to-end by numzyme's
+# own test suite.
+
+on:
+  push:
+    branches: [numba-nrt]
+  workflow_dispatch:
+
+jobs:
+  build-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        # -l so the conda hooks from setup-miniconda are loaded
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: conda-incubator/setup-miniconda@v4
+        with:
+          miniforge-version: latest
+          activate-environment: llvm20
+      - name: Install LLVM 20 toolchain (numba dev channel)
+        run: >
+          conda install -y -c numba/label/dev -c conda-forge
+          llvmdev=20 cmake ninja c-compiler cxx-compiler
+      - name: Configure and build LLVMEnzyme-20
+        run: |
+          cmake -S enzyme -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR="$(llvm-config --cmakedir)" \
+            -DENZYME_CLANG=OFF \
+            -DENZYME_FLANG=OFF \
+            -DENZYME_MLIR=OFF \
+            -DENZYME_ENABLE_PLUGINS=ON \
+            -DENZYME_EXTERNAL_SHARED_LIB=OFF \
+            -DENZYME_STATIC_LIB=OFF \
+            -DCMAKE_C_COMPILER="${CC:-cc}" \
+            -DCMAKE_CXX_COMPILER="${CXX:-c++}"
+          cmake --build build --target LLVMEnzyme-20 -j "$(nproc)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LLVMEnzyme-20.so
+          path: build/Enzyme/LLVMEnzyme-20.so
