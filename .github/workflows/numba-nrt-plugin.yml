@@ -23,6 +23,11 @@ jobs:
         shell: bash -leo pipefail {0}
     steps:
       - uses: actions/checkout@v7
+      - name: Cache conda packages
+        uses: actions/cache@v4
+        with:
+          path: ~/conda_pkgs_dir
+          key: conda-pkgs-${{ runner.os }}-llvmdev20
       - uses: conda-incubator/setup-miniconda@v4
         with:
           miniforge-version: latest
@@ -31,6 +36,15 @@ jobs:
         run: >
           conda install -y -c numba/label/dev -c conda-forge
           llvmdev=20 cmake ninja c-compiler cxx-compiler
+      # incremental: restore the newest previous build dir so ninja only
+      # recompiles what the push touched
+      - name: Cache build directory
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: enzyme-build-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            enzyme-build-${{ runner.os }}-
       - name: Configure and build LLVMEnzyme-20
         run: |
           cmake -S enzyme -B build -G Ninja \
