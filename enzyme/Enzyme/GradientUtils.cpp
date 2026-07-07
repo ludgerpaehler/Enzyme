@@ -8349,6 +8349,17 @@ nofast:;
     }
     assert(targets.size() > 0);
 
+    // With several storing predecessors, one storing block can lie on an
+    // execution path through another (e.g. a loop header that
+    // unconditionally stores its selector and a loop exit that later
+    // overwrites it): the slot is legitimately re-stored with a different
+    // value ("last store wins"), so its loads/stores must not carry
+    // !invariant.group -- the metadata would assert all stores agree and
+    // let GVN fold the reverse-pass selector to the wrong constant,
+    // dropping entire regions of the adjoint.
+    if (storing.size() > 1)
+      MultiStoreCaches.insert(cache);
+
     for (const auto &pair : storing) {
       IRBuilder<> pbuilder(pair.first);
 

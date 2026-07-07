@@ -1442,8 +1442,10 @@ void CacheUtility::storeInstructionInCache(LimitContext ctx,
   StoreInst *storeinst = v.CreateStore(tostore, loc);
 
   // If the value stored doesnt change (per efficient bool cache),
-  // mark it as invariant
-  if (tostore == val) {
+  // mark it as invariant.  Multi-store caches (last-store-wins branch
+  // selectors) overwrite slots with differing values, so tagging them
+  // would be UB and miscompile the reverse pass.
+  if (tostore == val && !MultiStoreCaches.count(cache)) {
     if (ValueInvariantGroups.find(cache) == ValueInvariantGroups.end()) {
       MDNode *invgroup = MDNode::getDistinct(cache->getContext(), {});
       ValueInvariantGroups[cache] = invgroup;
@@ -1611,14 +1613,18 @@ llvm::Value *CacheUtility::loadFromCachePointer(Type *T,
   // Retrieve the actual result
   auto result = BuilderM.CreateLoad(T, cptr);
 
-  // Apply requisite invariant, alignment, etc
-  if (ValueInvariantGroups.find(cache) == ValueInvariantGroups.end()) {
-    MDNode *invgroup = MDNode::getDistinct(cache->getContext(), {});
-    ValueInvariantGroups[cache] = invgroup;
+  // Apply requisite invariant, alignment, etc.  Multi-store caches are
+  // not invariant (see MultiStoreCaches), so their loads must stay
+  // untagged as well.
+  if (!MultiStoreCaches.count(cache)) {
+    if (ValueInvariantGroups.find(cache) == ValueInvariantGroups.end()) {
+      MDNode *invgroup = MDNode::getDistinct(cache->getContext(), {});
+      ValueInvariantGroups[cache] = invgroup;
+    }
+    result->setMetadata(LLVMContext::MD_invariant_group,
+                        ValueInvariantGroups[cache]);
   }
   CacheLookups.insert(result);
-  result->setMetadata(LLVMContext::MD_invariant_group,
-                      ValueInvariantGroups[cache]);
   ConstantInt *byteSizeOfType = ConstantInt::get(
       Type::getInt64Ty(cache->getContext()),
       newFunc->getParent()->getDataLayout().getTypeAllocSizeInBits(
