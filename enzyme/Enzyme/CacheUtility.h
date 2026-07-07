@@ -302,6 +302,17 @@ private:
   std::map<llvm::Value *, llvm::MDNode *> ValueInvariantGroups;
 
 protected:
+  /// Caches whose slots may legitimately be stored more than once per
+  /// dynamic index with differing values (e.g. the last-store-wins
+  /// branch-selector caches built by branchToCorrespondingTarget when a
+  /// merge block has several storing predecessors on one execution
+  /// path).  Loads/stores of such caches must NOT be tagged
+  /// !invariant.group: the metadata asserts every store to the slot
+  /// writes the same value, so a differently-valued overwrite makes it
+  /// UB and lets GVN fold the reverse-pass load to the wrong constant,
+  /// silently dead-code-eliminating whole regions of the adjoint.
+  llvm::SmallPtrSet<llvm::Value *, 2> MultiStoreCaches;
+
   /// A map of values being cached to their underlying allocation/limit context
   std::map<llvm::Value *,
            std::pair<llvm::AssertingVH<llvm::AllocaInst>, LimitContext>>
