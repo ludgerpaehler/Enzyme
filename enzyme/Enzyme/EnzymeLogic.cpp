@@ -236,9 +236,20 @@ struct CacheAnalysis {
         // a caller function cannot overwrite this (since it cannot access).
         // Since we don't currently perform this check, we can instead check
         // if the pointer has a guaranteed free (which is a weaker form of
-        // the required property).
-        if (allocationsWithGuaranteedFree.find(obj_op) !=
-            allocationsWithGuaranteedFree.end()) {
+        // the required property). This inference is only legal if every
+        // guaranteed free unconditionally deallocates: a refcount decrement
+        // (e.g. NRT_decref) with a refcount above one leaves the object
+        // live, so other references to it may legally persist and be
+        // written through, and the exemption must not apply.
+        auto gfd = allocationsWithGuaranteedFree.find(obj_op);
+        bool guaranteedDead = gfd != allocationsWithGuaranteedFree.end();
+        if (guaranteedDead)
+          for (auto freeCall : gfd->second)
+            if (isRefcountedDeallocation(getFuncNameFromCall(freeCall))) {
+              guaranteedDead = false;
+              break;
+            }
+        if (guaranteedDead) {
 
         } else if (n == "julia.get_pgcstack" || n == "julia.ptls_states" ||
                    n == "jl_get_ptls_states") {

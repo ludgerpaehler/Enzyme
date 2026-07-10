@@ -51,6 +51,15 @@ static inline bool isNRTAllocationFunction(const llvm::StringRef name) {
          name == "NRT_MemInfo_alloc_safe_aligned";
 }
 
+/// Return whether a given deallocation function releases its operand by
+/// decrementing a reference count rather than unconditionally freeing it. A
+/// guaranteed call to such a function does not guarantee the object is dead
+/// (the refcount may exceed one), so it cannot be used to infer that no other
+/// references to the object exist.
+static inline bool isRefcountedDeallocation(const llvm::StringRef name) {
+  return name == "NRT_decref";
+}
+
 /// Return whether a given function is a known C/C++ memory allocation function
 /// For updating below one should read MemoryBuiltins.cpp, TargetLibraryInfo.cpp
 static inline bool isAllocationFunction(const llvm::StringRef name,
