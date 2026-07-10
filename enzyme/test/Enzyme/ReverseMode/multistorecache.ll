@@ -18,15 +18,15 @@
 ; fallback selector cache is used. Single-store value caches (the cache of
 ; %v) must keep !invariant.group.
 
-define double @f(ptr %x, i64 %n) {
+define double @f(double* %x, i64 %n) {
 entry:
   br label %loop
 
 loop:
   %i = phi i64 [ 0, %entry ], [ %inext, %merge ]
   %sum = phi double [ 0.000000e+00, %entry ], [ %nsum, %merge ]
-  %gep = getelementptr inbounds double, ptr %x, i64 %i
-  %v = load double, ptr %gep, align 8
+  %gep = getelementptr inbounds double, double* %x, i64 %i
+  %v = load double, double* %gep, align 8
   %r = urem i64 %i, 4
   %c0 = icmp eq i64 %r, 0
   br i1 %c0, label %b0, label %t1
@@ -57,7 +57,7 @@ b3:
 
 merge:
   %val = phi double [ %m0, %b0 ], [ %m1, %b1 ], [ %m2, %b2 ], [ %m3, %b3 ]
-  store double 0.000000e+00, ptr %gep, align 8
+  store double 0.000000e+00, double* %gep, align 8
   %nsum = fadd double %sum, %val
   %inext = add nuw nsw i64 %i, 1
   %done = icmp eq i64 %inext, %n
@@ -69,9 +69,9 @@ exit:
 
 declare double @__enzyme_autodiff(...)
 
-define void @caller(ptr %x, ptr %dx, i64 %n) {
+define void @caller(double* %x, double* %dx, i64 %n) {
 entry:
-  %r = call double (...) @__enzyme_autodiff(ptr @f, metadata !"enzyme_dup", ptr %x, ptr %dx, i64 %n)
+  %r = call double (...) @__enzyme_autodiff(double (double*, i64)* @f, metadata !"enzyme_dup", double* %x, double* %dx, i64 %n)
   ret void
 }
 
@@ -79,24 +79,24 @@ entry:
 
 ; The overwritten load %v is cached once per iteration (single store), so
 ; its cache store keeps !invariant.group.
-; CHECK: store double %v, ptr %{{.+}}, align 8, !invariant.group
+; CHECK: store double %v, {{double\*|ptr}} %{{.+}}, align 8, !invariant.group
 
 ; The selector caches are written by all four predecessors of %merge with
 ; distinct constants; neither the phi-selector cache nor the branch-selector
 ; cache store may carry !invariant.group (the {{[[:space:]]*$}} anchors
 ; assert there is no trailing metadata).
-; CHECK: store i8 0, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 0, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 1, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 1, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 2, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 2, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 3, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: store i8 3, ptr %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 0, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 0, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 1, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 1, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 2, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 2, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 3, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: store i8 3, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
 
 ; Reverse pass: the cached value of %v is reloaded with !invariant.group ...
-; CHECK: load double, ptr %{{.+}}, align 8, !alias.scope !{{[0-9]+}}, !noalias !{{[0-9]+}}, !invariant.group
+; CHECK: load double, {{double\*|ptr}} %{{.+}}, align 8, !alias.scope !{{[0-9]+}}, !noalias !{{[0-9]+}}, !invariant.group
 
 ; ... but the two selector loads must stay untagged.
-; CHECK: load i8, ptr %{{.+}}, align 1{{[[:space:]]*$}}
-; CHECK: load i8, ptr %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: load i8, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
+; CHECK: load i8, {{i8\*|ptr}} %{{.+}}, align 1{{[[:space:]]*$}}
