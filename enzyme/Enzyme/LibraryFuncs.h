@@ -41,6 +41,16 @@ extern llvm::StringMap<
     std::function<llvm::CallInst *(llvm::IRBuilder<> &, llvm::Value *)>>
     shadowErasers;
 
+/// Return whether a given function is a Numba NRT (Numba runtime) allocation
+/// entry point. These return a pointer to a reference-counted MemInfo header;
+/// the allocated buffer (whose size is the first argument) lives behind the
+/// header's data field, and the header is released with NRT_decref.
+static inline bool isNRTAllocationFunction(const llvm::StringRef name) {
+  return name == "NRT_MemInfo_alloc" || name == "NRT_MemInfo_alloc_safe" ||
+         name == "NRT_MemInfo_alloc_aligned" ||
+         name == "NRT_MemInfo_alloc_safe_aligned";
+}
+
 /// Return whether a given function is a known C/C++ memory allocation function
 /// For updating below one should read MemoryBuiltins.cpp, TargetLibraryInfo.cpp
 static inline bool isAllocationFunction(const llvm::StringRef name,
@@ -52,6 +62,8 @@ static inline bool isAllocationFunction(const llvm::StringRef name,
   if (name == "_mlir_memref_to_llvm_alloc")
     return true;
   if (name == "swift_allocObject")
+    return true;
+  if (isNRTAllocationFunction(name))
     return true;
   if (name == "__size_returning_new_experiment")
     return true;
@@ -135,11 +147,6 @@ static inline bool isDeallocationFunction(const llvm::StringRef name,
       return true;
     if (name == "swift_release")
       return true;
-    // Numba runtime (NRT) reference-count release / deallocation.  Recognizing
-    // NRT_decref as a deallocation lets Enzyme cache the paired
-    // NRT_MemInfo_alloc* allocation and emit a single, correctly-placed free
-    // instead of duplicating the refcount op across the augmented/reverse
-    // passes (which multi-frees and corrupts the heap).
     if (name == "NRT_decref")
       return true;
     return false;
@@ -230,6 +237,19 @@ static inline void zeroKnownAllocation(llvm::IRBuilder<> &bb,
 
   if (funcName == "__size_returning_new_experiment")
     dst_arg = bb.CreateExtractValue(dst_arg, 0);
+
+  // NRT allocation functions return a pointer to the MemInfo header rather
+  // than to the allocated buffer. Zero the buffer behind the header's data
+  // field (NRT_MemInfo_data_fast is how Numba-emitted IR reads it); zeroing
+  // from the returned pointer would instead clobber the header's refcount,
+  // dtor, and data fields.
+  if (isNRTAllocationFunction(funcName)) {
+    auto i8p = getInt8PtrTy(toZero->getContext());
+    auto dataFn =
+        bb.GetInsertBlock()->getParent()->getParent()->getOrInsertFunction(
+            "NRT_MemInfo_data_fast", FunctionType::get(i8p, {i8p}, false));
+    dst_arg = bb.CreateCall(dataFn, bb.CreatePointerCast(dst_arg, i8p));
+  }
 
   if (dst_arg->getType()->isIntegerTy())
     dst_arg = bb.CreateIntToPtr(dst_arg, getInt8PtrTy(toZero->getContext()));

@@ -9852,6 +9852,43 @@ llvm::CallInst *freeKnownAllocation(llvm::IRBuilder<> &builder,
     return shadowErasers[allocationfn](builder, tofree);
   }
 
+  if (isNRTAllocationFunction(allocationfn)) {
+    // NRT allocations return a reference-counted MemInfo header owned by the
+    // Numba runtime; the corresponding release is NRT_decref, not libc free
+    // (the header is not a malloc'd pointer and freeing it directly corrupts
+    // the NRT heap).
+    //
+    // Known limitation: this releases only the single reference created by
+    // the allocation itself. If the original program raised the refcount via
+    // NRT_incref and dropped the final reference through several NRT_decref
+    // calls, the extra references are not re-emitted here and the buffer
+    // would leak; recognizing balanced incref/decref pairs is left as a TODO.
+    Type *VoidTy = Type::getVoidTy(tofree->getContext());
+    Type *IntPtrTy = getInt8PtrTy(tofree->getContext());
+
+    auto FT = FunctionType::get(VoidTy, ArrayRef<Type *>(IntPtrTy), false);
+    Value *freevalue = builder.GetInsertBlock()
+                           ->getParent()
+                           ->getParent()
+                           ->getOrInsertFunction("NRT_decref", FT)
+                           .getCallee();
+    CallInst *freecall = cast<CallInst>(CallInst::Create(
+        FT, freevalue,
+        ArrayRef<Value *>(builder.CreatePointerCast(tofree, IntPtrTy)), "",
+        builder.GetInsertBlock()));
+    freecall->setDebugLoc(debuglocation);
+    if (isa<CallInst>(tofree) &&
+        cast<CallInst>(tofree)->getAttributes().hasAttribute(
+            AttributeList::ReturnIndex, Attribute::NonNull)) {
+      freecall->addAttribute(AttributeList::FirstArgIndex, Attribute::NonNull);
+    }
+    if (Function *F = dyn_cast<Function>(freevalue))
+      freecall->setCallingConv(F->getCallingConv());
+    if (freecall->getParent() == nullptr)
+      builder.Insert(freecall);
+    return freecall;
+  }
+
   if (allocationfn == "__size_returning_new_experiment") {
     allocationfn = "malloc";
     tofree = builder.CreateExtractValue(tofree, 0);
