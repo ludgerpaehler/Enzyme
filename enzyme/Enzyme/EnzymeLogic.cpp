@@ -123,6 +123,14 @@ cl::opt<bool> EnzymeAssumeUnknownNoFree(
     cl::desc("Assume unknown instructions are nofree as needed"));
 
 LLVMValueRef (*EnzymeFixupReturn)(LLVMBuilderRef, LLVMValueRef) = nullptr;
+
+// Capability marker (numba-nrt fork patch): exported so embedders (NumZyme)
+// can dlsym-probe whether this build makes the custom-forward fixderivative
+// wrappers width-aware, WITHOUT attempting a width>1 synthesis (which on
+// unpatched builds dies in an uncatchable assert, GradientUtils.cpp
+// replaceAWithB).  The value is a feature-format version, currently 1.
+__attribute__((visibility("default")))
+int EnzymeWidthAwareCustomForward = 1;
 }
 
 struct CacheAnalysis {
@@ -4767,8 +4775,12 @@ Function *EnzymeLogic::CreateForwardDiff(
       if (returnUsed && retType == DIFFE_TYPE::CONSTANT) {
       }
       if (!returnUsed && retType != DIFFE_TYPE::CONSTANT && !hasconstant) {
+        // The wrapper returns only the derivative part; at width > 1 that is
+        // the vectorized shadow type [width x RetT] (the registered
+        // derivative must return { RetT, [width x RetT] }).
         FunctionType *FTy = FunctionType::get(
-            todiff->getReturnType(), foundcalled->getFunctionType()->params(),
+            GradientUtils::getShadowType(todiff->getReturnType(), width),
+            foundcalled->getFunctionType()->params(),
             foundcalled->getFunctionType()->isVarArg());
         Function *NewF = Function::Create(
             FTy, Function::LinkageTypes::InternalLinkage,
@@ -4798,7 +4810,9 @@ Function *EnzymeLogic::CreateForwardDiff(
       auto &arg = std::get<0>(tup);
       curTypes.push_back(arg.getType());
       if (std::get<1>(tup) != DIFFE_TYPE::CONSTANT) {
-        curTypes.push_back(arg.getType());
+        // Duplicated arguments carry their shadow in the vectorized shadow
+        // type ([width x T] at width > 1, T itself at width 1).
+        curTypes.push_back(GradientUtils::getShadowType(arg.getType(), width));
         nextConstantArgs.push_back(std::get<1>(tup));
         continue;
       }
@@ -4822,7 +4836,15 @@ Function *EnzymeLogic::CreateForwardDiff(
     if (legal) {
       Type *RT = todiff->getReturnType();
       if (returnUsed && retType != DIFFE_TYPE::CONSTANT) {
-        RT = StructType::get(RT->getContext(), {RT, RT});
+        // {primal, shadow} pair; the shadow member is the vectorized shadow
+        // type ([width x RetT] at width > 1).
+        RT = StructType::get(RT->getContext(),
+                             {RT, GradientUtils::getShadowType(RT, width)});
+      }
+      if (!returnUsed && retType != DIFFE_TYPE::CONSTANT) {
+        // Only the derivative part is returned: the vectorized shadow type
+        // (extracted below from the registered derivative's return pair).
+        RT = GradientUtils::getShadowType(RT, width);
       }
       if (!returnUsed && retType == DIFFE_TYPE::CONSTANT) {
         RT = Type::getVoidTy(RT->getContext());
