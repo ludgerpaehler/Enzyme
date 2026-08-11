@@ -103,6 +103,16 @@ extern LLVMValueRef (*CustomErrorHandler)(const char *, LLVMValueRef, ErrorType,
                                           LLVMBuilderRef);
 }
 
+// Invoke CustomErrorHandler while supplying an exact, call-site-typed recovery
+// value to scoped C API diagnostic adapters. Ordinary handlers retain their
+// existing ABI and return semantics. Recovery is thread-local and restored
+// after the callback, including nested calls.
+LLVMValueRef CallCustomErrorHandlerWithRecovery(
+    const char *Message, LLVMValueRef OffendingValue, ErrorType Type,
+    const void *Data, LLVMValueRef Data2, LLVMBuilderRef Builder,
+    LLVMValueRef Recovery);
+LLVMValueRef GetCustomErrorRecoveryValue();
+
 llvm::SmallVector<llvm::Instruction *, 2> PostCacheStore(llvm::StoreInst *SI,
                                                          llvm::IRBuilder<> &B);
 

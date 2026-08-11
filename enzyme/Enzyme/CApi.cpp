@@ -55,6 +55,10 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Transforms/IPO/Attributor.h"
 
+#include <atomic>
+#include <new>
+#include <thread>
+
 #define addAttribute addAttributeAtIndex
 #define removeAttribute removeAttributeAtIndex
 #define getAttribute getAttributeAtIndex
@@ -183,7 +187,183 @@ FnTypeInfo eunwrap(CFnTypeInfo CTI, llvm::Function *F) {
   return FTI;
 }
 
+namespace {
+std::atomic<uintptr_t> DiagnosticScopeOwner{0};
+thread_local unsigned char DiagnosticThreadToken;
+thread_local EnzymeDiagnosticScopeRef ActiveDiagnosticScope = nullptr;
+
+uintptr_t currentDiagnosticThreadToken() {
+  return reinterpret_cast<uintptr_t>(&DiagnosticThreadToken);
+}
+
+void acquireDiagnosticScope() {
+  const uintptr_t Token = currentDiagnosticThreadToken();
+  uintptr_t Expected = 0;
+  while (!DiagnosticScopeOwner.compare_exchange_weak(
+      Expected, Token, std::memory_order_acquire, std::memory_order_relaxed)) {
+    Expected = 0;
+    std::this_thread::yield();
+  }
+}
+} // namespace
+
+struct EnzymeOpaqueDiagnosticScope {
+  decltype(CustomErrorHandler) PreviousHandler;
+  EnzymeDiagnosticHandler Handler;
+  void *UserData;
+  EnzymeDiagnosticScopeRef Parent;
+  uintptr_t Owner;
+  bool OwnsProcessLock;
+};
+
+namespace {
+bool diagnosticIsFatal(ErrorType Type) {
+  switch (Type) {
+  case ErrorType::TypeDepthExceeded:
+  case ErrorType::MixedActivityError:
+  case ErrorType::GCRewrite:
+  case ErrorType::NaNError:
+    return false;
+  default:
+    return true;
+  }
+}
+
+void emitDefaultNaNRuntimeFailure(LLVMValueRef Message,
+                                  LLVMBuilderRef Builder) {
+  if (!Message || !Builder)
+    return;
+  IRBuilder<> &B = *unwrap(Builder);
+  Module *M = B.GetInsertBlock()->getParent()->getParent();
+  LLVMContext &Context = M->getContext();
+  FunctionType *PutsTy = FunctionType::get(
+      Type::getInt32Ty(Context), {getInt8PtrTy(Context)}, false);
+  B.CreateCall(M->getOrInsertFunction("puts", PutsTy), unwrap(Message));
+
+  FunctionType *ExitTy = FunctionType::get(
+      Type::getVoidTy(Context), {Type::getInt32Ty(Context)}, false);
+  B.CreateCall(M->getOrInsertFunction("exit", ExitTy),
+               ConstantInt::get(Type::getInt32Ty(Context), 1));
+}
+
+LLVMValueRef ScopedDiagnosticAdapter(const char *Message,
+                                     LLVMValueRef OffendingValue,
+                                     ErrorType Type, const void *,
+                                     LLVMValueRef Data2,
+                                     LLVMBuilderRef Builder) {
+  EnzymeDiagnosticScopeRef Scope = ActiveDiagnosticScope;
+  LLVMValueRef Recovery = GetCustomErrorRecoveryValue();
+  const bool IsFatal = diagnosticIsFatal(Type);
+  // Enzyme's default NaN path emits a runtime puts/exit sequence. Merely
+  // observing that advisory through a non-null handler must not silently
+  // remove the sanitizer's behavior.
+  if (Type == ErrorType::NaNError)
+    emitDefaultNaNRuntimeFailure(Data2, Builder);
+  if (Scope && Scope->Handler)
+    Scope->Handler(Message ? Message : "", OffendingValue,
+                   static_cast<int32_t>(Type), IsFatal, Recovery,
+                   Scope->UserData);
+  // The observing C callback cannot manufacture or substitute an LLVM value.
+  // Only the exact recovery selected by the reporting Enzyme call site may
+  // flow back into synthesis.
+  return Recovery;
+}
+} // namespace
+
 extern "C" {
+
+const struct EnzymeCAPIManifest *EnzymeGetCAPIManifest(void) {
+  static const struct EnzymeCAPIManifest Manifest = {
+      sizeof(struct EnzymeCAPIManifest),
+      ENZYME_CAPI_ABI_VERSION,
+      LLVM_VERSION_MAJOR,
+      LLVM_VERSION_MINOR,
+      LLVM_VERSION_PATCH,
+      reinterpret_cast<uintptr_t>(&LLVMContextCreate),
+      ENZYME_VERSION_MAJOR,
+      ENZYME_VERSION_MINOR,
+      ENZYME_VERSION_PATCH,
+      ENZYME_CAPI_FEATURE_TYPE_TREES |
+          ENZYME_CAPI_FEATURE_FORWARD_DIFF |
+          ENZYME_CAPI_FEATURE_REVERSE_DIFF |
+          ENZYME_CAPI_FEATURE_AUGMENTED_RETURN |
+          ENZYME_CAPI_FEATURE_ALLOCATION_HANDLER |
+          ENZYME_CAPI_FEATURE_ATOMIC_ADD |
+          ENZYME_CAPI_FEATURE_KNOWN_VALUES_PER_ARG |
+          ENZYME_CAPI_FEATURE_WIDTH_AWARE_CUSTOM_FORWARD_V1 |
+          ENZYME_CAPI_FEATURE_NUMBA_NRT_MEMINFO_V1 |
+          ENZYME_CAPI_FEATURE_SCOPED_DIAGNOSTIC_HANDLER_V1,
+      sizeof(CConcreteType),
+      alignof(CConcreteType),
+      sizeof(CDIFFE_TYPE),
+      alignof(CDIFFE_TYPE),
+      sizeof(CDerivativeMode),
+      alignof(CDerivativeMode),
+      sizeof(struct IntList),
+      alignof(struct IntList),
+      offsetof(struct IntList, data),
+      offsetof(struct IntList, size),
+      sizeof(struct CFnTypeInfo),
+      alignof(struct CFnTypeInfo),
+      offsetof(struct CFnTypeInfo, Arguments),
+      offsetof(struct CFnTypeInfo, Return),
+      offsetof(struct CFnTypeInfo, KnownValues),
+      {DT_Anything, DT_Integer, DT_Pointer, DT_Half, DT_Float, DT_Double,
+       DT_Unknown, DT_X86_FP80, DT_BFloat16, DT_FP128},
+      {DFT_OUT_DIFF, DFT_DUP_ARG, DFT_CONSTANT, DFT_DUP_NONEED},
+      {DEM_ForwardMode, DEM_ReverseModePrimal, DEM_ReverseModeGradient,
+       DEM_ReverseModeCombined, DEM_ForwardModeSplit, DEM_ForwardModeError},
+      sizeof(ErrorType),
+      alignof(ErrorType),
+      {static_cast<int32_t>(ErrorType::NoDerivative),
+       static_cast<int32_t>(ErrorType::NoShadow),
+       static_cast<int32_t>(ErrorType::IllegalTypeAnalysis),
+       static_cast<int32_t>(ErrorType::NoType),
+       static_cast<int32_t>(ErrorType::IllegalFirstPointer),
+       static_cast<int32_t>(ErrorType::InternalError),
+       static_cast<int32_t>(ErrorType::TypeDepthExceeded),
+       static_cast<int32_t>(ErrorType::MixedActivityError),
+       static_cast<int32_t>(ErrorType::IllegalReplaceFicticiousPHIs),
+       static_cast<int32_t>(ErrorType::GetIndexError),
+       static_cast<int32_t>(ErrorType::NoTruncate),
+       static_cast<int32_t>(ErrorType::GCRewrite),
+       static_cast<int32_t>(ErrorType::NaNError)},
+      {1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0}};
+  return &Manifest;
+}
+
+EnzymeDiagnosticScopeRef
+EnzymeBeginDiagnosticScope(EnzymeDiagnosticHandler Handler, void *UserData) {
+  if (!Handler)
+    return nullptr;
+  auto *Scope = new (std::nothrow) EnzymeOpaqueDiagnosticScope;
+  if (!Scope)
+    return nullptr;
+  Scope->OwnsProcessLock = ActiveDiagnosticScope == nullptr;
+  if (Scope->OwnsProcessLock)
+    acquireDiagnosticScope();
+  Scope->PreviousHandler = CustomErrorHandler;
+  Scope->Handler = Handler;
+  Scope->UserData = UserData;
+  Scope->Parent = ActiveDiagnosticScope;
+  Scope->Owner = currentDiagnosticThreadToken();
+  ActiveDiagnosticScope = Scope;
+  CustomErrorHandler = &ScopedDiagnosticAdapter;
+  return Scope;
+}
+
+uint8_t EnzymeEndDiagnosticScope(EnzymeDiagnosticScopeRef Scope) {
+  if (!Scope || ActiveDiagnosticScope != Scope ||
+      Scope->Owner != currentDiagnosticThreadToken())
+    return 0;
+  CustomErrorHandler = Scope->PreviousHandler;
+  ActiveDiagnosticScope = Scope->Parent;
+  const bool ReleaseProcessLock = Scope->OwnsProcessLock;
+  delete Scope;
+  if (ReleaseProcessLock)
+    DiagnosticScopeOwner.store(0, std::memory_order_release);
+  return 1;
+}
 
 void EnzymeSetCLBool(void *ptr, uint8_t val) {
   auto cl = (llvm::cl::opt<bool> *)ptr;

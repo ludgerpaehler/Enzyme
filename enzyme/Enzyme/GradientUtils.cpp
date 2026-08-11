@@ -5735,9 +5735,10 @@ Value *GradientUtils::invertPointerM(Value *const oval, IRBuilder<> &BuilderM,
             "shadow global\n";
       ss << *arg << "\n";
       if (CustomErrorHandler) {
-        return unwrap(CustomErrorHandler(ss.str().c_str(), wrap(arg),
-                                         ErrorType::NoShadow, this, nullptr,
-                                         wrap(&BuilderM)));
+        Value *Recovery = UndefValue::get(getShadowType(arg->getType()));
+        return unwrap(CallCustomErrorHandlerWithRecovery(
+            ss.str().c_str(), wrap(arg), ErrorType::NoShadow, this, nullptr,
+            wrap(&BuilderM), wrap(Recovery)));
       } else {
         EmitFailure("InvertGlobal", BuilderM.getCurrentDebugLocation(), oldFunc,
                     ss.str());
@@ -5755,9 +5756,10 @@ Value *GradientUtils::invertPointerM(Value *const oval, IRBuilder<> &BuilderM,
       ss << *arg << "\n";
       ss << " md: " << *md << "\n";
       if (CustomErrorHandler) {
-        return unwrap(CustomErrorHandler(ss.str().c_str(), wrap(arg),
-                                         ErrorType::NoShadow, this, nullptr,
-                                         wrap(&BuilderM)));
+        Value *Recovery = UndefValue::get(getShadowType(arg->getType()));
+        return unwrap(CallCustomErrorHandlerWithRecovery(
+            ss.str().c_str(), wrap(arg), ErrorType::NoShadow, this, nullptr,
+            wrap(&BuilderM), wrap(Recovery)));
       } else {
         EmitFailure("InvertGlobal", BuilderM.getCurrentDebugLocation(), oldFunc,
                     ss.str());
@@ -6566,9 +6568,10 @@ end:;
     std::string str;
     raw_string_ostream ss(str);
     ss << "cannot find shadow for " << *oval;
-    auto iv =
-        unwrap(CustomErrorHandler(str.c_str(), wrap(oval), ErrorType::NoShadow,
-                                  this, nullptr, wrap(&BuilderM)));
+    Value *Recovery = UndefValue::get(getShadowType(oval->getType()));
+    auto iv = unwrap(CallCustomErrorHandlerWithRecovery(
+        str.c_str(), wrap(oval), ErrorType::NoShadow, this, nullptr,
+        wrap(&BuilderM), wrap(Recovery)));
     if (iv) {
       invertedPointers.insert(
           std::make_pair((const Value *)oval, InvertedPointerVH(this, iv)));

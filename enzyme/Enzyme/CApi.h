@@ -29,6 +29,15 @@
 // #include "llvm-c/Initialization.h"
 #include "llvm-c/Target.h"
 #include <stddef.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#define ENZYME_CAPI_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define ENZYME_CAPI_EXPORT __attribute__((visibility("default")))
+#else
+#define ENZYME_CAPI_EXPORT
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -85,27 +94,31 @@ typedef enum {
 
 struct EnzymeTypeTree;
 typedef struct EnzymeTypeTree *CTypeTreeRef;
-CTypeTreeRef EnzymeNewTypeTree();
-CTypeTreeRef EnzymeNewTypeTreeCT(CConcreteType, LLVMContextRef ctx);
-CTypeTreeRef EnzymeNewTypeTreeTR(CTypeTreeRef);
-void EnzymeFreeTypeTree(CTypeTreeRef CTT);
+ENZYME_CAPI_EXPORT CTypeTreeRef EnzymeNewTypeTree(void);
+ENZYME_CAPI_EXPORT CTypeTreeRef
+EnzymeNewTypeTreeCT(CConcreteType, LLVMContextRef ctx);
+ENZYME_CAPI_EXPORT CTypeTreeRef EnzymeNewTypeTreeTR(CTypeTreeRef);
+ENZYME_CAPI_EXPORT void EnzymeFreeTypeTree(CTypeTreeRef CTT);
 uint8_t EnzymeSetTypeTree(CTypeTreeRef dst, CTypeTreeRef src);
-uint8_t EnzymeMergeTypeTree(CTypeTreeRef dst, CTypeTreeRef src);
-void EnzymeTypeTreeOnlyEq(CTypeTreeRef dst, int64_t x);
-void EnzymeTypeTreeData0Eq(CTypeTreeRef dst);
+ENZYME_CAPI_EXPORT uint8_t EnzymeMergeTypeTree(CTypeTreeRef dst,
+                                                CTypeTreeRef src);
+ENZYME_CAPI_EXPORT void EnzymeTypeTreeOnlyEq(CTypeTreeRef dst, int64_t x);
+ENZYME_CAPI_EXPORT void EnzymeTypeTreeData0Eq(CTypeTreeRef dst);
 void EnzymeTypeTreeShiftIndiciesEq(CTypeTreeRef dst, const char *datalayout,
                                    int64_t offset, int64_t maxSize,
                                    uint64_t addOffset);
-void EnzymeTypeTreeInsertEq(CTypeTreeRef dst, const int64_t *indices,
-                            size_t len, CConcreteType ct, LLVMContextRef ctx);
-const char *EnzymeTypeTreeToString(CTypeTreeRef src);
-void EnzymeTypeTreeToStringFree(const char *cstr);
+ENZYME_CAPI_EXPORT void
+EnzymeTypeTreeInsertEq(CTypeTreeRef dst, const int64_t *indices, size_t len,
+                       CConcreteType ct, LLVMContextRef ctx);
+ENZYME_CAPI_EXPORT const char *
+EnzymeTypeTreeToString(CTypeTreeRef src);
+ENZYME_CAPI_EXPORT void EnzymeTypeTreeToStringFree(const char *cstr);
 
 void EnzymeSetCLBool(void *, uint8_t);
 void EnzymeSetCLInteger(void *, int64_t);
 void EnzymeSetCLString(void *, const char *);
 
-struct CFnTypeInfo {
+typedef struct CFnTypeInfo {
   /// Types of arguments, assumed of size len(Arguments)
   CTypeTreeRef *Arguments;
 
@@ -115,7 +128,7 @@ struct CFnTypeInfo {
   /// The specific constant(s) known to represented by an argument, if constant
   // map is [arg number] => list
   struct IntList *KnownValues;
-};
+} CFnTypeInfo;
 
 typedef enum {
   DFT_OUT_DIFF = 0,  // add differential to an output struct. Only for scalar
@@ -139,6 +152,100 @@ typedef enum {
   DEM_ForwardModeError = 5
 } CDerivativeMode;
 
+// Versioned, read-only description of the C ABI consumed by out-of-tree
+// clients.  Keep this a plain C struct: clients deliberately query it through
+// the handle that loaded Enzyme before resolving or calling the rest of the
+// API.  New fields may only be appended and require StructSize to grow;
+// incompatible changes increment ABIVersion.
+#define ENZYME_CAPI_ABI_VERSION 1
+#define ENZYME_CAPI_FEATURE_TYPE_TREES UINT64_C(1)
+#define ENZYME_CAPI_FEATURE_FORWARD_DIFF UINT64_C(2)
+#define ENZYME_CAPI_FEATURE_REVERSE_DIFF UINT64_C(4)
+#define ENZYME_CAPI_FEATURE_AUGMENTED_RETURN UINT64_C(8)
+#define ENZYME_CAPI_FEATURE_ALLOCATION_HANDLER UINT64_C(16)
+#define ENZYME_CAPI_FEATURE_ATOMIC_ADD UINT64_C(32)
+#define ENZYME_CAPI_FEATURE_KNOWN_VALUES_PER_ARG UINT64_C(64)
+// Custom-forward rule glue preserves width-N shadow arrays and return lanes.
+// EnzymeWidthAwareCustomForward remains exported as the legacy value-1 probe.
+#define ENZYME_CAPI_FEATURE_WIDTH_AWARE_CUSTOM_FORWARD_V1 UINT64_C(128)
+// Numba MemInfo allocations are classified/zeroed through their data pointer,
+// one generated shadow reference is released with NRT_decref, and that
+// decrement is not treated as proof that every alias/reference is dead.
+#define ENZYME_CAPI_FEATURE_NUMBA_NRT_MEMINFO_V1 UINT64_C(256)
+// A C client may install a nonthrowing diagnostic sink for one synthesis
+// scope. Enzyme—not the client callback—supplies any recovery LLVM value.
+#define ENZYME_CAPI_FEATURE_SCOPED_DIAGNOSTIC_HANDLER_V1 UINT64_C(512)
+
+struct EnzymeCAPIManifest {
+  uint32_t StructSize;
+  uint32_t ABIVersion;
+  uint32_t LLVMMajor;
+  uint32_t LLVMMinor;
+  uint32_t LLVMPatch;
+  uintptr_t LLVMContextCreateAddress;
+  uint32_t EnzymeMajor;
+  uint32_t EnzymeMinor;
+  uint32_t EnzymePatch;
+  uint64_t FeatureBits;
+
+  uint32_t ConcreteTypeSize;
+  uint32_t ConcreteTypeAlign;
+  uint32_t DiffeTypeSize;
+  uint32_t DiffeTypeAlign;
+  uint32_t DerivativeModeSize;
+  uint32_t DerivativeModeAlign;
+
+  uint32_t IntListSize;
+  uint32_t IntListAlign;
+  uint32_t IntListDataOffset;
+  uint32_t IntListSizeOffset;
+
+  uint32_t FnTypeInfoSize;
+  uint32_t FnTypeInfoAlign;
+  uint32_t FnTypeInfoArgumentsOffset;
+  uint32_t FnTypeInfoReturnOffset;
+  uint32_t FnTypeInfoKnownValuesOffset;
+
+  int32_t ConcreteTypeValues[10];
+  int32_t DiffeTypeValues[4];
+  int32_t DerivativeModeValues[6];
+
+  uint32_t ErrorTypeSize;
+  uint32_t ErrorTypeAlign;
+  int32_t ErrorTypeValues[13];
+  uint8_t ErrorTypeFatal[13];
+};
+
+ENZYME_CAPI_EXPORT const struct EnzymeCAPIManifest *
+EnzymeGetCAPIManifest(void);
+
+// Diagnostic callbacks are observers only: they must not throw across this C
+// boundary and cannot choose the value returned to Enzyme. RecoveryValue is
+// either NULL (when the reporting site accepts no value) or an Enzyme-supplied
+// placeholder whose LLVM type exactly matches what that site consumes. The
+// scoped adapter returns that exact value after Handler returns.
+typedef void (*EnzymeDiagnosticHandler)(const char *Message,
+                                        LLVMValueRef OffendingValue,
+                                        int32_t ErrorType,
+                                        uint8_t IsFatal,
+                                        LLVMValueRef RecoveryValue,
+                                        void *UserData);
+
+struct EnzymeOpaqueDiagnosticScope;
+typedef struct EnzymeOpaqueDiagnosticScope *EnzymeDiagnosticScopeRef;
+
+// Begin holds a process-wide recursive scope lock until End. Scopes may nest
+// on one thread; different threads serialize. End must run on the thread that
+// began the scope. The previous CustomErrorHandler is restored before the lock
+// is released. Diagnostics must be emitted synchronously on that same thread;
+// direct clients that access CustomErrorHandler without this scoped API remain
+// outside its concurrency contract. This observes CustomErrorHandler calls
+// only: assert, llvm_unreachable, and report_fatal_error are not recoverable.
+ENZYME_CAPI_EXPORT EnzymeDiagnosticScopeRef
+EnzymeBeginDiagnosticScope(EnzymeDiagnosticHandler Handler, void *UserData);
+ENZYME_CAPI_EXPORT uint8_t
+EnzymeEndDiagnosticScope(EnzymeDiagnosticScopeRef Scope);
+
 typedef enum {
   DEM_Trace = 0,
   DEM_Condition = 1,
@@ -149,12 +256,11 @@ typedef uint8_t (*CustomRuleType)(int /*direction*/, CTypeTreeRef /*return*/,
                                   struct IntList * /*knownValues*/,
                                   size_t /*numArgs*/, LLVMValueRef,
                                   void * /*TA*/);
-EnzymeTypeAnalysisRef CreateTypeAnalysis(EnzymeLogicRef Log,
-                                         char **customRuleNames,
-                                         CustomRuleType *customRules,
-                                         size_t numRules);
-void ClearTypeAnalysis(EnzymeTypeAnalysisRef);
-void FreeTypeAnalysis(EnzymeTypeAnalysisRef);
+ENZYME_CAPI_EXPORT EnzymeTypeAnalysisRef
+CreateTypeAnalysis(EnzymeLogicRef Log, char **customRuleNames,
+                   CustomRuleType *customRules, size_t numRules);
+ENZYME_CAPI_EXPORT void ClearTypeAnalysis(EnzymeTypeAnalysisRef);
+ENZYME_CAPI_EXPORT void FreeTypeAnalysis(EnzymeTypeAnalysisRef);
 
 EnzymeLogicRef EnzymeTypeAnalysisGetLogic(EnzymeTypeAnalysisRef TAR);
 EnzymeTypeAnalysisRef EnzymeGetTypeAnalysisFromTypeAnalyzer(void *TAR);
@@ -171,29 +277,47 @@ EnzymeTraceInterfaceRef CreateEnzymeStaticTraceInterface(
     LLVMValueRef hasChoiceFunction);
 EnzymeTraceInterfaceRef
 CreateEnzymeDynamicTraceInterface(LLVMValueRef interface, LLVMValueRef F);
-EnzymeLogicRef CreateEnzymeLogic(uint8_t PostOpt);
-void ClearEnzymeLogic(EnzymeLogicRef);
-void FreeEnzymeLogic(EnzymeLogicRef);
+ENZYME_CAPI_EXPORT EnzymeLogicRef CreateEnzymeLogic(uint8_t PostOpt);
+ENZYME_CAPI_EXPORT void ClearEnzymeLogic(EnzymeLogicRef);
+ENZYME_CAPI_EXPORT void FreeEnzymeLogic(EnzymeLogicRef);
 void EnzymeLogicSetExternalContext(EnzymeLogicRef, void *ExternalContext);
 void *EnzymeLogicGetExternalContext(EnzymeLogicRef);
 
-void EnzymeExtractReturnInfo(EnzymeAugmentedReturnPtr ret, int64_t *data,
-                             uint8_t *existed, size_t len);
+ENZYME_CAPI_EXPORT void
+EnzymeExtractReturnInfo(EnzymeAugmentedReturnPtr ret, int64_t *data,
+                        uint8_t *existed, size_t len);
 
-LLVMValueRef
+ENZYME_CAPI_EXPORT LLVMValueRef
 EnzymeExtractFunctionFromAugmentation(EnzymeAugmentedReturnPtr ret);
-LLVMTypeRef EnzymeExtractTapeTypeFromAugmentation(EnzymeAugmentedReturnPtr ret);
+ENZYME_CAPI_EXPORT LLVMTypeRef
+EnzymeExtractTapeTypeFromAugmentation(EnzymeAugmentedReturnPtr ret);
 
+ENZYME_CAPI_EXPORT EnzymeAugmentedReturnPtr EnzymeCreateAugmentedPrimal(
+    EnzymeLogicRef Logic, LLVMValueRef request_req, LLVMBuilderRef request_ip,
+    LLVMValueRef todiff, CDIFFE_TYPE retType, CDIFFE_TYPE *constant_args,
+    size_t constant_args_size, EnzymeTypeAnalysisRef TA, uint8_t returnUsed,
+    uint8_t shadowReturnUsed, CFnTypeInfo typeInfo,
+    uint8_t subsequent_calls_may_write, uint8_t *_overwritten_args,
+    size_t overwritten_args_size, uint8_t forceAnonymousTape,
+    uint8_t runtimeActivity, uint8_t strongZero, unsigned width,
+    uint8_t AtomicAdd);
+
+#ifdef __cplusplus
 class GradientUtils;
 class DiffeGradientUtils;
+#else
+typedef struct GradientUtils GradientUtils;
+typedef struct DiffeGradientUtils DiffeGradientUtils;
+#endif
 
 typedef LLVMValueRef (*CustomShadowAlloc)(LLVMBuilderRef, LLVMValueRef,
                                           size_t /*numArgs*/, LLVMValueRef *,
                                           GradientUtils *);
 typedef LLVMValueRef (*CustomShadowFree)(LLVMBuilderRef, LLVMValueRef);
 
-void EnzymeRegisterAllocationHandler(char *Name, CustomShadowAlloc AHandle,
-                                     CustomShadowFree FHandle);
+ENZYME_CAPI_EXPORT void
+EnzymeRegisterAllocationHandler(char *Name, CustomShadowAlloc AHandle,
+                                CustomShadowFree FHandle);
 
 typedef uint8_t (*CustomFunctionForward)(LLVMBuilderRef, LLVMValueRef,
                                          GradientUtils *, LLVMValueRef *,
@@ -212,7 +336,7 @@ typedef uint8_t (*CustomAugmentedFunctionForward)(LLVMBuilderRef, LLVMValueRef,
 typedef void (*CustomFunctionReverse)(LLVMBuilderRef, LLVMValueRef,
                                       DiffeGradientUtils *, LLVMValueRef);
 
-LLVMValueRef EnzymeCreateForwardDiff(
+ENZYME_CAPI_EXPORT LLVMValueRef EnzymeCreateForwardDiff(
     EnzymeLogicRef Logic, LLVMValueRef request_req, LLVMBuilderRef request_ip,
     LLVMValueRef todiff, CDIFFE_TYPE retType, CDIFFE_TYPE *constant_args,
     size_t constant_args_size, EnzymeTypeAnalysisRef TA, uint8_t returnValue,
@@ -222,7 +346,7 @@ LLVMValueRef EnzymeCreateForwardDiff(
     uint8_t *_overwritten_args, size_t overwritten_args_size,
     EnzymeAugmentedReturnPtr augmented);
 
-LLVMValueRef EnzymeCreatePrimalAndGradient(
+ENZYME_CAPI_EXPORT LLVMValueRef EnzymeCreatePrimalAndGradient(
     EnzymeLogicRef Logic, LLVMValueRef request_req, LLVMBuilderRef request_ip,
     LLVMValueRef todiff, CDIFFE_TYPE retType, CDIFFE_TYPE *constant_args,
     size_t constant_args_size, EnzymeTypeAnalysisRef TA, uint8_t returnValue,

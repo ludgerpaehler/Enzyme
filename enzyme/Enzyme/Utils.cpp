@@ -109,6 +109,38 @@ llvm::cl::opt<bool> EnzymeNonPower2Cache(
     cl::desc("Disable caching of integers which are not a power of 2"));
 }
 
+namespace {
+thread_local LLVMValueRef CustomErrorRecoveryValue = nullptr;
+
+class ScopedCustomErrorRecovery {
+  LLVMValueRef Previous;
+
+public:
+  explicit ScopedCustomErrorRecovery(LLVMValueRef Recovery)
+      : Previous(CustomErrorRecoveryValue) {
+    CustomErrorRecoveryValue = Recovery;
+  }
+  ~ScopedCustomErrorRecovery() { CustomErrorRecoveryValue = Previous; }
+
+  ScopedCustomErrorRecovery(const ScopedCustomErrorRecovery &) = delete;
+  ScopedCustomErrorRecovery &
+  operator=(const ScopedCustomErrorRecovery &) = delete;
+};
+} // namespace
+
+LLVMValueRef CallCustomErrorHandlerWithRecovery(
+    const char *Message, LLVMValueRef OffendingValue, ErrorType Type,
+    const void *Data, LLVMValueRef Data2, LLVMBuilderRef Builder,
+    LLVMValueRef Recovery) {
+  ScopedCustomErrorRecovery Guard(Recovery);
+  return CustomErrorHandler(Message, OffendingValue, Type, Data, Data2,
+                            Builder);
+}
+
+LLVMValueRef GetCustomErrorRecoveryValue() {
+  return CustomErrorRecoveryValue;
+}
+
 #define addAttribute addAttributeAtIndex
 #define getAttribute getAttributeAtIndex
 bool attributeKnownFunctions(llvm::Function &F) {
